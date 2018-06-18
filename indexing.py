@@ -1,8 +1,6 @@
 from pdb import set_trace as st
 
 import threading
-from mmappickle import mmapdict
-import linecache
 import numpy as np
 import logging
 import os
@@ -13,11 +11,7 @@ import sqlite3
 import os
 
 class file_index(object):
-    """Use mmap=True (default) for indexing very large files. If it is the case, 
-        loading a preexistent memmaped index only needs instatiating the 
-        file_index object provided the index_file path. In the case mmap=False
-        a directly pickled index is needed (or existent), so save_index and 
-        load_index methods must be used after instatiating this object."""
+    "Use n_jobs = 1 for now."
     def __init__(self, input_file, index_file=None, mmap=True, wsize=10,
                         encoding='latin1', sampsize=50, n_jobs=1, chunk_size=1000, verbose=True):
 
