@@ -31,6 +31,7 @@ i.fit()
 logging.info("Index fitted!!")
 logging.info("Output database: {}".format(outputf))
 
+
 if not args.test_words is None:
     logging.info("Building example...")
     for w in args.test_words.split(','):
