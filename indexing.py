@@ -102,7 +102,7 @@ class file_index(object):
                         logging.info("Saved index chunk %d into index file %s \n" % (ck, self.index_file))
                         ck += 1
                     c += 1
-                
+
             else:
                 logging.info("Creating index in-memory database... \n")
                 for n, row in enumerate(f):
@@ -111,6 +111,13 @@ class file_index(object):
         try:
             self.cursor.execute("create index idxword on words(word)")
             self.conn.commit()
+            # Getting properties
+            query = "SELECT Count() FROM words"
+            self.cursor.execute(query) # , t)
+            self.vocab_size = self.cursor.fetchall()[0][0]
+            self.cursor.execute("SELECT * FROM words")
+            self.vocab = [r[0] for r in self.cursor.fetchall()]
+
             logging.info("Saved index into index file datbase %s\n" % self.index_file)
             return self
         except:
@@ -120,7 +127,7 @@ class file_index(object):
 
     def connect(self):
         self.conn = sqlite3.connect(self.index_file, check_same_thread=False)
-        self.cursor = self.conn.cursor()        
+        self.cursor = self.conn.cursor()
 
         return self
 
@@ -153,7 +160,7 @@ class file_index(object):
         if self.n_jobs != 1 and self.n_jobs != 0:
             cursor = conn.cursor()
         else:
-            cursor = self.cursor 
+            cursor = self.cursor
 
         for of, word in enumerate(row.split()):
             t = (word, self.tup2str((line_id, of)) )
@@ -190,7 +197,7 @@ class InsertionThread(threading.Thread):
         #conn.execute('CREATE TABLE IF NOT EXISTS threadcount (threadnum, count);')
         for of, word in enumerate(self.row.split()):
             t = (self.line_id, of)
-            create = """CREATE TABLE IF NOT EXISTS "{}" (row int, pos int)""".format(word) 
+            create = """CREATE TABLE IF NOT EXISTS "{}" (row int, pos int)""".format(word)
             insert = """INSERT INTO "{}" VALUES (?,?)""".format(word)
             try:
                 conn.execute(create)
@@ -200,5 +207,5 @@ class InsertionThread(threading.Thread):
                 conn.commit()
                 conn.close()
                 raise
-            
+
         conn.commit()
