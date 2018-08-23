@@ -25,16 +25,16 @@ def word_sparse_centroid(index_db, idf_model, word, vsize):
 
     try:
         for n, window in enumerate(index_db.windows(word)):
-            sparse_embedding = idf_model.transform([" ".join(window)]) # .toarray()
+            sparse_embedding = idf_model.transform([" ".join(window)])
             if n != 0:
                 sparse_centroid = sparse_centroid + (sparse_centroid - sparse_embedding) / (n + 1)
             else:
                 sparse_centroid = sparse_embedding
 
     except:
-        return -1
+        yield -1
 
-    return coo_matrix(sparse_centroid, shape=(1, vsize))
+    yield coo_matrix(sparse_centroid, shape=(1, vsize))
 
 class streamer(object):
     def __init__(self, file_name):
@@ -108,15 +108,16 @@ try:
 except:
     logging.info("IDF model file does not exist in: %s ..." % args.idf)
     exit()
-
-sparse_centroids = (word_sparse_centroid(i, vectorizer, word,
+sparse_centroids = Parallel(n_jobs=10)(delayed(word_sparse_centroid)(i, vectorizer, word,
                             len(vectorizer.vocabulary_)) for word in i.vocab)
+#sparse_centroids = (word_sparse_centroid(i, vectorizer, word,
+#                            len(vectorizer.vocabulary_)) for word in i.vocab)
 
 from itertools import chain
 from itertools import islice
 from sklearn.decomposition import MiniBatchDictionaryLearning as NMF
 
-nmf = NMF(n_components=args.dim, random_state=1, alpha=.1, n_jobs=4)
+nmf = NMF(n_components=args.dim, random_state=1, alpha=.1, n_jobs=10)
 batch_size = 10
 
 for batch in batches(sparse_centroids, batch_size):
