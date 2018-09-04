@@ -1,5 +1,4 @@
 import indexing
-from joblib import Parallel, delayed
 import logging, os
 from time import gmtime, strftime
 import argparse
@@ -43,7 +42,7 @@ class streamer(object):
         self.file_name = file_name
 
     def __iter__(self):
-        for s in open(self.file_name):
+        for s in open(self.file_name, 'rb'):
             yield s.strip()
 
 
@@ -82,10 +81,36 @@ if args.db is None:
 else:
     outputf = args.db
 
+try:
+    if not args.idf is None:
+        logging.info("Loading global TFIDF weights from: %s ..." % args.idf)
+        with open(args.idf, 'rb') as f:
+            if pyVersion == '2':
+                vectorizer = pickle.load(f)
+            else:
+                vectorizer = pickle.load(f, encoding = 'latin-1')
+    else:
+        vectorizer = TfidfVectorizer(
+                #ngram_range=(1, args.ngrams),
+                #encoding = "latin-1",
+                decode_error = "replace",
+                lowercase = True,
+                #binary = True,# if args.localw.startswith("bin") else False,
+                sublinear_tf = True,# if args.localw.startswith("subl") else False,
+                stop_words = "english" #if args.stop == 'ost' else None
+                )
+        logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
+        lines = streamer(args.input)
+        vectorizer.fit(lines)
+        
+except:
+    logging.info("IDF model file does not exist in: %s ..." % args.idf)
+    exit()
+
 DBexists = os.path.exists(outputf)
-logging.info("Instantiating index...")
+logging.info("Instantiating index object...")
 index = indexing.file_index(input_file = args.input, #'/almac/ignacio/data/INEXQA2012corpus/wikiEn_sts_clean_ph2.txt',
-                        index_file = outputf,#'/almac/ignacio/data/INEXQA2012corpus/wikiEn_sts_clean_ph2.db',
+                        index_file = outputf, vectorizer=vectorizer,
                         mmap=True, wsize=args.wsize, sampsize=args.samples, n_jobs=1,
                         chunk_size=args.chunk,
                         verbose=args.verbo)
@@ -97,31 +122,6 @@ if not DBexists:
 
 if index.vocab_size < args.bsize:
     logging.info("ERROR: Batch size [{}] must be greater than vocabulary [{}]".format(args.bsize, index.vocab_size))
-    exit()
-    
-try:
-    if not args.idf is None:
-        logging.info("Loading global TFIDF weights from: %s ..." % args.idf)
-        with open(args.idf, 'rb') as f:
-            if pyVersion == '2':
-                vectorizer = pickle.load(f)
-            else:
-                vectorizer = pickle.load(f, encoding = 'latin-1')
-    else:
-        vectorizer = TfidfVectorizer(min_df = 1,
-                #ngram_range=(1, args.ngrams),
-                #encoding = "latin-1",
-                decode_error = "replace",
-                lowercase = True,
-                #binary = True,# if args.localw.startswith("bin") else False,
-                sublinear_tf = True,# if args.localw.startswith("subl") else False,
-                #stop_words = "english" if args.stop == 'ost' else None
-                )
-        logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
-        lines = streamer(args.input)
-        vectorizer.fit(lines)
-except:
-    logging.info("IDF model file does not exist in: %s ..." % args.idf)
     exit()
 
 sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
@@ -146,7 +146,8 @@ sparse_embedding_matrix = csr_matrix(kmenas.cluster_centers_)
 sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
                             len(vectorizer.vocabulary_)) for word in index.vocab)
 logging.info("Writing word vectors into file %s ..." % args.output)
-logging.info("Vocabulary size %d ..." % index.vocab_size)
+logging.info("DB Vocabulary size %d ..." % index.vocab_size)
+logging.info("Vectorizer vocabulary size %d ..." % len(vectorizer.vocabulary_.keys()))
 print("Shape of resulting embedding matrix: ")
 print(sparse_embedding_matrix.shape)
 

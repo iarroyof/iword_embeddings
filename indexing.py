@@ -1,5 +1,5 @@
 from pdb import set_trace as st
-
+from sklearn.feature_extraction.text import TfidfVectorizer
 import threading
 import numpy as np
 import logging
@@ -10,13 +10,17 @@ from random import shuffle
 import sqlite3
 import os
 
+
 class file_index(object):
     "Use n_jobs = 1 for now."
-    def __init__(self, input_file, index_file=None, mmap=True, wsize=10,
+    def __init__(self, input_file, index_file=None, mmap=True, wsize=10, vectorizer=None,
                         encoding='latin1', sampsize=50, n_jobs=1, chunk_size=1000, verbose=True):
 
         self.mmap = mmap
         self.memory = ":memory:"
+        if not (vectorizer is None):
+            self.vectorizer = vectorizer
+            self.tokenizer = vectorizer.build_tokenizer()
         self.encoder = encoding
         self.index_file = self.memory if (not index_file or index_file == ":memory:") else index_file
         self.chunk_size = chunk_size
@@ -61,12 +65,11 @@ class file_index(object):
             self.cursor.execute(query, (word, ))
 
         coordinates = self.str2tup([t for w, t in self.cursor.fetchall()])
-        logging.info("Got coordinates for '%s'\n" % word)
 
         windows = []
         for r, w in coordinates:
             try:
-                ln = self.index_lines[r].split()
+                ln = self.index_lines[r].split() #decode("utf-8").split()
             except UnicodeDecodeError:
                 continue
             except AttributeError:
@@ -77,53 +80,75 @@ class file_index(object):
             start = min(len(ln[0:w]), self.wsize)
             windows.append(ln[w - start:w] + ln[w + 1:w + (self.wsize + 1)])
 
-        logging.info("Got windows for '%s'\n" % word)
+        if self.verbose > 10:
+            logging.info("Got windows for '%s'\n" % word)
         return windows
 
+
     def fit(self):
-        f = open(self.input_file, encoding='latin-1')
-        if self.n_jobs > 1 or self.n_jobs == -1:
-            #Parallel(n_jobs=self.n_jobs)(delayed(self.index_row)(n, row, self.conn)
-            #                                    for n, row in enumerate(f))
-            assert self.index_file  # Index file must be specified in multithreading mode
-            for n, row in enumerate(f):
-                t = InsertionThread(n, row, self.index_file)
-                t.start()
-        else:
+        with open(self.input_file, mode='rb') as f: # encoding='latin-1', mode='rb') as f:
             if self.index_file != self.memory and self.chunk_size > 0:
                 c = 0
                 ck = 0
-
-                for n, row in enumerate(f):
-                    self.index_row(n, row)
+                for n, row in enumerate(enumerate(f)):
+                    #st()
+                    self.index_row(n, row[1])
                     if c == self.chunk_size:
                         c = 0
                         self.conn.commit()
-                        logging.info("Saved index chunk %d into index file %s \n" % (ck, self.index_file))
+                        if self.verbose > 10:
+                            logging.info("Saved index chunk %d into index file %s \n" % (ck, self.index_file))
                         ck += 1
                     c += 1
 
             else:
-                logging.info("Creating index in-memory database... \n")
-                for n, row in enumerate(f):
+                if self.verbose:
+                    logging.info("Creating index in-memory database... \n")
+                for n, row in enumerate(get_binary(self.input_file)):
                     self.index_row(n, row)
 
-        try:
-            self.cursor.execute("create index idxword on words(word)")
-            self.conn.commit()
+            try:
+                self.cursor.execute("create index idxword on words(word)")
+                self.conn.commit()
             # Getting properties
-            query = "SELECT Count() FROM words"
-            self.cursor.execute(query) # , t)
-            self.vocab_size = self.cursor.fetchall()[0][0]
-            self.cursor.execute("SELECT * FROM words")
-            self.vocab = [r[0] for r in self.cursor.fetchall()]
+                self.cursor.execute("SELECT * FROM words")
+                self.vocab = list(set([r[0] for r in self.cursor.fetchall()]))
+                self.vocab_size = len(self.vocab)
+            
+                if self.verbose:
+                    logging.info("Saved index into index file datbase %s\n" % self.index_file)
+                return self
+            except:
+                print("Database couldn't be created... EXIT error.")
+                raise
+            
 
-            logging.info("Saved index into index file datbase %s\n" % self.index_file)
-            return self
-        except:
-            print("Database couldn't be created... EXIT error.")
-            raise
+    def load_input(self):
+        """ Call this method when a prefitted index db file already exists"""
+        with open(self.input_file, mode='rb') as fc: # encoding=self.encoder, mode='rb') as fc:
+            self.index_lines = fc.readlines()
+        #with open(self.index_file, 'rb') as f:
+        #    
+        #    self.index_lines = []
+        #    bytes = []
+        #    while True:
+        #        byte = f.read(1)
+        #        if not byte:
+        #            break
+        #        elif byte != b'\n':
+        #            bytes.append(byte)
+        #        else:
+        #            self.index_lines.append(b"".join(bytes))
+        #            bytes = []
 
+        #file_list = [b.decode("utf-8") for b in file_byte]
+
+        self.cursor.execute("SELECT * FROM words")
+        self.vocab = list(set([r[0] for r in self.cursor.fetchall()]))
+        self.vocab_size = len(self.vocab)
+        logging.info("Loaded index database properties and connections..")
+        # Return pointer to the index
+        return self
 
     def connect(self):
         self.conn = sqlite3.connect(self.index_file, check_same_thread=False)
@@ -162,7 +187,8 @@ class file_index(object):
         else:
             cursor = self.cursor
 
-        for of, word in enumerate(row.split()):
+        
+        for of, word in enumerate(self.tokenize(row)):
             t = (word, self.tup2str((line_id, of)) )
             insert = "INSERT INTO words VALUES (?, ?)"
             try:
@@ -175,37 +201,12 @@ class file_index(object):
         if self.n_jobs != 1 and self.n_jobs != 0:
             self.conn.commit()
 
-
-    def load_input(self):
-        """ Call this method when a prefitted index db file already exists"""
-        with open(self.input_file, encoding=self.encoder) as fc:
-            self.index_lines = fc.readlines()
-        # Return pointer to the index
-        return self
-
-
-class InsertionThread(threading.Thread):
-
-    def __init__(self, line_id, row, filename):
-        super(InsertionThread, self).__init__()
-        self.row = row
-        self.line_id = line_id
-        self.filename = filename
-
-    def run(self):
-        conn = sqlite3.connect(self.filename, timeout=10, check_same_thread=False)
-        #conn.execute('CREATE TABLE IF NOT EXISTS threadcount (threadnum, count);')
-        for of, word in enumerate(self.row.split()):
-            t = (self.line_id, of)
-            create = """CREATE TABLE IF NOT EXISTS "{}" (row int, pos int)""".format(word)
-            insert = """INSERT INTO "{}" VALUES (?,?)""".format(word)
-            try:
-                conn.execute(create)
-                conn.execute(insert, t)
-            except sqlite3.OperationalError:
-                print("Problems to create word table '%s'.\n" % word)
-                conn.commit()
-                conn.close()
-                raise
-
-        conn.commit()
+    def tokenize(self, string):
+        if self.tokenizer:
+            if self.vectorizer.lowercase:
+                string = string.lower()
+            return [w.encode() for w in self.tokenizer(string.decode('utf-8'))]
+        else:
+            self.vectorizer = TfidfVectorizer()
+            self.tokenizer = self.vectorizer.build_tokenizer()
+            return self.tokenize(string)

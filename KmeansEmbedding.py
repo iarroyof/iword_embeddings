@@ -4,7 +4,7 @@ import logging, os
 from time import gmtime, strftime
 import argparse
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import KMeans
 from itertools import chain
 from itertools import islice
 #from sklearn.decomposition import MiniBatchDictionaryLearning as NMF
@@ -21,6 +21,17 @@ from pdb import set_trace as st
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s',
                     level=logging.INFO)
+
+
+class sparse_centroids(object):
+    def __init__(self, index_db, idf_model, vocab):
+        self.index_db = index_db
+        self.idf_model = idf_model
+        self.vocab = vocab
+        self.vsize = len(vocab)
+    def __iter__(self):
+        for word in self.vocab:
+            yield word_sparse_centroid(self.index_db, self.idf_model, word, self.vsize)
 
 
 def word_sparse_centroid(index_db, idf_model, word, vsize):
@@ -124,21 +135,23 @@ except:
     logging.info("IDF model file does not exist in: %s ..." % args.idf)
     exit()
 
-sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
-                            len(vectorizer.vocabulary_)) for word in index.vocab)
+#sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
+#                            len(vectorizer.vocabulary_)) for word in index.vocab)
+centroids = sparse_centroids(index, vectorizer, index.vocab) # index_db, idf_model, vocab
 #nmf = NMF(n_components=args.dim, random_state=1, alpha=.1, n_jobs=20)
-
+centroids = batches(centroids, len(index.vocab))
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
-# 
+ 
 logging.info("Fitting k-Means clustering for sparse coding ...")
-kmenas = MiniBatchKMeans(n_clusters=args.dim, init='k-means++', max_iter=4, batch_size=batch_size)
-#buffer = []
-
-for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
-    #buffer.append(vstack(batch))
-    logging.info("Fitted the %d th batch..." % i)
-    kmenas.partial_fit(batch)
-
+kmenas = KMeans(n_clusters=args.dim, init='random', max_iter=10, n_jobs=20)
+#for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
+#    logging.info("Fitted the %d th batch..." % i)
+#    kmenas.partial_fit(batch)
+#from sklearn.feature_extraction.text import TfidfVectorizer
+#vectorizer = TfidfVectorizer()
+#tfidf = vectorizer.fit(centroids)
+#st()
+kmenas.fit(next(centroids).tocsr())
 sparse_embedding_matrix = csr_matrix(kmenas.cluster_centers_)
 
 #sparse_word_centroids = ((word, word_sparse_centroid(i, vectorizer, word, 
