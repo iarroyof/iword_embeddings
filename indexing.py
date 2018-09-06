@@ -2,6 +2,7 @@ from pdb import set_trace as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 import threading
 import numpy as np
+from scipy.sparse import csr_matrix
 import logging
 import os
 from functools import partial
@@ -35,7 +36,7 @@ class file_index(object):
         else:
             self.connect()
             self.load_input()
-
+                                                
 
     def __enter__(self):
         self.connect()
@@ -96,7 +97,7 @@ class file_index(object):
                     if c == self.chunk_size:
                         c = 0
                         self.conn.commit()
-                        if self.verbose > 10:
+                        if self.verbose > 5:
                             logging.info("Saved index chunk %d into index file %s \n" % (ck, self.index_file))
                         ck += 1
                     c += 1
@@ -104,6 +105,7 @@ class file_index(object):
             else:
                 if self.verbose:
                     logging.info("Creating index in-memory database... \n")
+
                 for n, row in enumerate(get_binary(self.input_file)):
                     self.index_row(n, row)
 
@@ -127,21 +129,6 @@ class file_index(object):
         """ Call this method when a prefitted index db file already exists"""
         with open(self.input_file, mode='rb') as fc: # encoding=self.encoder, mode='rb') as fc:
             self.index_lines = fc.readlines()
-        #with open(self.index_file, 'rb') as f:
-        #    
-        #    self.index_lines = []
-        #    bytes = []
-        #    while True:
-        #        byte = f.read(1)
-        #        if not byte:
-        #            break
-        #        elif byte != b'\n':
-        #            bytes.append(byte)
-        #        else:
-        #            self.index_lines.append(b"".join(bytes))
-        #            bytes = []
-
-        #file_list = [b.decode("utf-8") for b in file_byte]
 
         self.cursor.execute("SELECT * FROM words")
         self.vocab = list(set([r[0] for r in self.cursor.fetchall()]))
@@ -150,10 +137,10 @@ class file_index(object):
         # Return pointer to the index
         return self
 
+
     def connect(self):
         self.conn = sqlite3.connect(self.index_file, check_same_thread=False)
         self.cursor = self.conn.cursor()
-
         return self
 
 
@@ -187,8 +174,8 @@ class file_index(object):
         else:
             cursor = self.cursor
 
-        
         for of, word in enumerate(self.tokenize(row)):
+            if word is None: continue
             t = (word, self.tup2str((line_id, of)) )
             insert = "INSERT INTO words VALUES (?, ?)"
             try:
@@ -198,15 +185,32 @@ class file_index(object):
                 self.disconnect()
                 raise
 
-        if self.n_jobs != 1 and self.n_jobs != 0:
-            self.conn.commit()
 
     def tokenize(self, string):
         if self.tokenizer:
             if self.vectorizer.lowercase:
-                string = string.lower()
-            return [w.encode() for w in self.tokenizer(string.decode('utf-8'))]
+                try:
+                    string = string.decode(errors="replace").lower()
+                except Exception as e:
+                    logging.info("Problems occurred while indexing row: {}\nEXCEPTION: {}".format(row, e))
+                    return None
+            return [w.encode() for w in self.tokenizer(string)]
         else:
             self.vectorizer = TfidfVectorizer()
             self.tokenizer = self.vectorizer.build_tokenizer()
             return self.tokenize(string)
+
+
+def write_given_embedding(word, arr, fname):
+    if isinstance(arr, csr_matrix):
+        arr = arr.toarray().reshape(1,-1)[0]
+        
+    row_we = word + " " + " ".join([str(i) for i in arr]) + '\n'
+    with open(fname, "a") as f:
+        f.write(row_we)
+
+
+def write_embedding(word, embedding_matrix, centroid, fname):
+    word_embedding = embedding_matrix.dot(centroid.T)
+    write_given_embedding(word, word_embedding, fname)
+

@@ -6,7 +6,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import MiniBatchKMeans
 from itertools import chain
 from itertools import islice
-#from sklearn.decomposition import MiniBatchDictionaryLearning as NMF
+from functools import partial
 import sys
 import time
 pyVersion = sys.version.split()[0].split(".")[0]
@@ -21,20 +21,35 @@ from pdb import set_trace as st
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s',
                     level=logging.INFO)
 
+class wordCentroids(object):
+    def __init__(self, db, vect):
+        self.db = db
+        self.vect = vect                    
+
+    def __iter__(self):
+        vocab_size = len(self.vect.vocabulary_)
+        for word in self.vect.vocabulary_:
+            yield word_sparse_centroid(self.db, self.vect, word, vocab_size)
+            
 
 def word_sparse_centroid(index_db, idf_model, word, vsize):
     try:
-        for n, window in enumerate(index_db.windows(word)):
+        windows = index_db.windows(word.encode())
+        if len(windows) == 1:
+            return coo_matrix(idf_model.transform([b' '.join(windows[0])]), shape=(1, vsize))
             
+        for n, window in enumerate(windows):
             sparse_embedding = idf_model.transform([b' '.join(window)])
             if n != 0:
                 sparse_centroid = sparse_centroid + (sparse_embedding - sparse_centroid) / (n + 1)
             else:
                 sparse_centroid = sparse_embedding
-    except:
-        return -1
 
-    return coo_matrix(sparse_centroid, shape=(1, vsize))
+        return coo_matrix(sparse_centroid, shape=(1, vsize))
+
+    except:
+        logging.info("Word not found in index DB: %s ...\nType q + Enter and fix the issue..." % word.encode())
+        return None
 
 
 class streamer(object):
@@ -115,24 +130,22 @@ index = indexing.file_index(input_file = args.input, #'/almac/ignacio/data/INEXQ
                         chunk_size=args.chunk,
                         verbose=args.verbo)
 if not DBexists:
-    logging.info("Starting to build index")
+    logging.info("Starting to build index into DB file %s" % outputf)
     index.fit()
     logging.info("Index fitted!!")
     logging.info("Output database: {}".format(outputf))
-
+else:
+    logging.info("Index loaded from DB file %s" % outputf)
+    
 if index.vocab_size < args.bsize:
     logging.info("ERROR: Batch size [{}] must be greater than vocabulary [{}]".format(args.bsize, index.vocab_size))
     exit()
 
-sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
-                            len(vectorizer.vocabulary_)) for word in index.vocab)
-#nmf = NMF(n_components=args.dim, random_state=1, alpha=.1, n_jobs=20)
-
+sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
 # 
 logging.info("Fitting k-Means clustering for sparse coding ...")
 kmenas = MiniBatchKMeans(n_clusters=args.dim, init='k-means++', max_iter=4, batch_size=batch_size)
-#buffer = []
 
 for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
     #buffer.append(vstack(batch))
@@ -141,20 +154,18 @@ for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
 
 sparse_embedding_matrix = csr_matrix(kmenas.cluster_centers_)
 
-#sparse_word_centroids = ((word, word_sparse_centroid(i, vectorizer, word, 
-#                                         len(vectorizer.vocabulary_))) for word in index.vocab)
-sparse_word_centroids = (word_sparse_centroid(index, vectorizer, word,
-                            len(vectorizer.vocabulary_)) for word in index.vocab)
 logging.info("Writing word vectors into file %s ..." % args.output)
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)
 logging.info("Vectorizer vocabulary size %d ..." % len(vectorizer.vocabulary_.keys()))
 print("Shape of resulting embedding matrix: ")
 print(sparse_embedding_matrix.shape)
-
+    
 with open(args.output, 'w+') as f:
-    for w, sparse_word_centroid in zip(index.vocab, sparse_word_centroids):
-        
-        dense_word_embedding = sparse_embedding_matrix.dot(sparse_word_centroid.T)
-        row_we = w.decode() + " " + " ".join([str(i) 
-                            for i in dense_word_embedding.toarray().reshape(1,-1)[0]]) + '\n'
-        f.write(row_we)
+    write = partial(indexing.write_embedding, embedding_matrix=sparse_embedding_matrix, f=f) 
+#    from joblib import Parallel, delayed
+#    Parallel(n_jobs=20)(delayed(write)(word=w, centroid=centroid, f=f) 
+#                    for w, centroid in zip(vectorizer.vocabulary_.keys(), sparse_word_centroids))
+    for w, sparse_word_centroid in zip(vectorizer.vocabulary_.keys(), sparse_word_centroids):
+        write(word=w, centroid=sparse_word_centroid)    
+
+
