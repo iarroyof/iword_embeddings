@@ -138,11 +138,10 @@ sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
  
 logging.info("Fitting Sparse Random Projections for sparse coding ...")
-factorizer = SRP(n_components=args.dim, random_state=42)
-
 X_s = Dict(sorted({w: v for w, v in sparse_word_centroids
                     if not v is None}.items(), key=lambda t: len(t[0])))
 
+factorizer = SRP(n_components=args.dim, random_state=42)
 word_embeddings = factorizer.fit_transform(vstack(list(X_s.values())))
 
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)
