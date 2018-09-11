@@ -205,7 +205,7 @@ def write_given_embedding(word, arr, fname):
     if isinstance(arr, csr_matrix):
         arr = arr.toarray().reshape(1,-1)[0]
         
-    row_we = word + " " + " ".join([str(i) for i in arr]) + '\n'
+    row_we = word + " " + " ".join(["{0:.6f}".format(i) for i in arr]) + '\n'
     with open(fname, "a") as f:
         f.write(row_we)
 

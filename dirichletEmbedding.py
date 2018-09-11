@@ -2,9 +2,9 @@ import indexing
 import logging, os
 from time import gmtime, strftime
 import argparse
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
 from joblib import Parallel, delayed
-from sklearn.decomposition import TruncatedSVD
+from sklearn.decomposition import LatentDirichletAllocation
 from itertools import chain
 from functools import partial
 from itertools import islice
@@ -102,13 +102,14 @@ try:
             else:
                 vectorizer = pickle.load(f, encoding = 'latin-1')
     else:
-        vectorizer = TfidfVectorizer(
+        vectorizer = CountVectorizer(
+                max_df=0.95, min_df=2,
                 #ngram_range=(1, args.ngrams),
                 #encoding = "latin-1",
                 decode_error = "replace",
                 lowercase = True,
                 #binary = True,# if args.localw.startswith("bin") else False,
-                sublinear_tf = True,# if args.localw.startswith("subl") else False,
+                #sublinear_tf = True,# if args.localw.startswith("subl") else False,
                 stop_words = "english" #if args.stop == 'ost' else None
                 )
         logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
@@ -137,11 +138,14 @@ else:
 sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
  
-logging.info("Fitting SVD Projections for orthogonal coding ...")
+logging.info("Fitting Latent Dirichlet Projections for sparse coding ...")
 X_s = Dict(sorted({w: v for w, v in sparse_word_centroids
                     if not v is None}.items(), key=lambda t: len(t[0])))
 
-factorizer = TruncatedSVD(n_components=args.dim)
+factorizer = LatentDirichletAllocation(n_topics=args.dim, max_iter=5,
+                                        learning_method='online', 
+                                        learning_offset=50., random_state=0)
+
 word_embeddings = factorizer.fit_transform(vstack(list(X_s.values())))
 
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)
