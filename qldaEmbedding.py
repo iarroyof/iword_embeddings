@@ -2,9 +2,11 @@ import indexing
 import logging, os
 from time import gmtime, strftime
 import argparse
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.discriminant_analysis import (LinearDiscriminantAnalysis, 
+                                        QuadraticDiscriminantAnalysis)
 from joblib import Parallel, delayed
-from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.decomposition import TruncatedSVD
 from itertools import chain
 from functools import partial
 from itertools import islice
@@ -18,7 +20,6 @@ else:
     import _pickle as pickle
 
 from scipy.sparse import coo_matrix, csr_matrix, vstack
-
 from pdb import set_trace as st
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s',
@@ -34,6 +35,22 @@ class wordCentroids(object): # self, db, vect
         vocab_size = len(self.vect.vocabulary_)
         for word in self.vect.vocabulary_:
             yield word, word_sparse_centroid(self.db, self.vect, word, vocab_size)
+
+
+class windows_vectors(object): # self, db, vect
+    def __init__(self, db, vect):
+        self.db = db
+        self.vect = vect
+                    
+    def __iter__(self):
+        vsize = len(self.vect.vocabulary_)
+        for word in self.vect.vocabulary_:
+            windows = self.db.windows(word.encode())
+            if len(windows) == 1:
+                yield word, coo_matrix(self.vect.transform([b' '.join(windows[0])]), shape=(1, vsize))
+            else:
+                #for window in windows:
+                yield word, coo_matrix(self.vect.transform([b' '.join(win) for win in windows]))
 
 
 def word_sparse_centroid(index_db, idf_model, word, vsize):
@@ -103,14 +120,13 @@ try:
             else:
                 vectorizer = pickle.load(f, encoding = 'latin-1')
     else:
-        vectorizer = CountVectorizer(
-                max_df=0.95, min_df=2,
+        vectorizer = TfidfVectorizer(
                 #ngram_range=(1, args.ngrams),
                 #encoding = "latin-1",
                 decode_error = "replace",
                 lowercase = True,
                 #binary = True,# if args.localw.startswith("bin") else False,
-                #sublinear_tf = True,# if args.localw.startswith("subl") else False,
+                sublinear_tf = True,# if args.localw.startswith("subl") else False,
                 stop_words = "english" #if args.stop == 'ost' else None
                 )
         logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
@@ -135,18 +151,21 @@ if not DBexists:
     logging.info("Output database: {}".format(outputf))
 else:
     logging.info("Index loaded from DB file %s" % outputf)
-    
-sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
+
+sparse_words = windows_vectors(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
- 
-logging.info("Fitting Latent Dirichlet Projections for sparse coding ...")
-X_s = Dict(sorted({w: v for w, v in sparse_word_centroids
-                    if not v is None}.items(), key=lambda t: len(t[0])))
 
-factorizer = LatentDirichletAllocation(n_topics=args.dim, max_iter=5,
-                                        learning_method='online', n_jobs=-1,
-                                        learning_offset=50., random_state=0)
+logging.info("Fitting SVD Projections for orthogonal coding ...")
 
+X_s = Dict(sorted({w: v for w, v in sparse_words if not v is None}.items(), 
+                                                        key=lambda t: len(t[0])))
+from itertools import repeat, chain               
+y_dict = {x: list(repeat(y, X_s[x].shape[0])) for y, x in enumerate(X_s)}
+y_train = list(chain(*y_dict.values()))
+factorizer = LinearDiscriminantAnalysis(n_components=args.dim)
+st()
+
+factorizer.fit(vstack(list(X_s.values())), y_train)
 word_embeddings = factorizer.fit_transform(vstack(list(X_s.values())))
 
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)

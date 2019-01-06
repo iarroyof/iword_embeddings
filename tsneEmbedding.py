@@ -2,9 +2,9 @@ import indexing
 import logging, os
 from time import gmtime, strftime
 import argparse
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from joblib import Parallel, delayed
-from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.manifold import locally_linear_embedding
 from itertools import chain
 from functools import partial
 from itertools import islice
@@ -18,7 +18,6 @@ else:
     import _pickle as pickle
 
 from scipy.sparse import coo_matrix, csr_matrix, vstack
-
 from pdb import set_trace as st
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s',
@@ -103,14 +102,13 @@ try:
             else:
                 vectorizer = pickle.load(f, encoding = 'latin-1')
     else:
-        vectorizer = CountVectorizer(
-                max_df=0.95, min_df=2,
+        vectorizer = TfidfVectorizer(
                 #ngram_range=(1, args.ngrams),
                 #encoding = "latin-1",
                 decode_error = "replace",
                 lowercase = True,
                 #binary = True,# if args.localw.startswith("bin") else False,
-                #sublinear_tf = True,# if args.localw.startswith("subl") else False,
+                sublinear_tf = True,# if args.localw.startswith("subl") else False,
                 stop_words = "english" #if args.stop == 'ost' else None
                 )
         logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
@@ -139,20 +137,18 @@ else:
 sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
  
-logging.info("Fitting Latent Dirichlet Projections for sparse coding ...")
+logging.info("Fitting Isomap for sparse coding ...")
 X_s = Dict(sorted({w: v for w, v in sparse_word_centroids
                     if not v is None}.items(), key=lambda t: len(t[0])))
 
-factorizer = LatentDirichletAllocation(n_topics=args.dim, max_iter=5,
-                                        learning_method='online', n_jobs=-1,
-                                        learning_offset=50., random_state=0)
-
-word_embeddings = factorizer.fit_transform(vstack(list(X_s.values())))
-
+word_embeddings, err = locally_linear_embedding(vstack(list(X_s.values())), method='ltsa',
+                                n_neighbors=5, n_components=args.dim, n_jobs=-1)
+#word_embeddings = factorizer.fit_transform(csr_matrix(vstack(list(X_s.values()))))
+logging.info("Recosntruction error %f ..." % err)
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)
 logging.info("Vectorizer vocabulary size %d ..." % len(vectorizer.vocabulary_.keys()))
 logging.info("Shape of resulting embedding matrix:")
-logging.info("({} {})".format(factorizer.components_.shape[0], factorizer.components_.shape[1]))
+#logging.info("({} {})".format(factorizer.embedding_.shape[0], factorizer.embedding_.shape[1]))
 
 logging.info("Writing word vectors into file %s ..." % args.output)
 write = partial(indexing.write_given_embedding, fname=args.output)

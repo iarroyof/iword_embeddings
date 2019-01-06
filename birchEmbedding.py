@@ -1,14 +1,14 @@
 import indexing
+import numpy as np
+from joblib import Parallel, delayed
 import logging, os
 from time import gmtime, strftime
 import argparse
-from sklearn.feature_extraction.text import CountVectorizer
-from joblib import Parallel, delayed
-from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import Birch
 from itertools import chain
-from functools import partial
 from itertools import islice
-from collections import OrderedDict as Dict
+from functools import partial
 import sys
 import time
 pyVersion = sys.version.split()[0].split(".")[0]
@@ -18,23 +18,23 @@ else:
     import _pickle as pickle
 
 from scipy.sparse import coo_matrix, csr_matrix, vstack
-
 from pdb import set_trace as st
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s',
                     level=logging.INFO)
 
-
-class wordCentroids(object): # self, db, vect
+class wordCentroids(object):
     def __init__(self, db, vect):
         self.db = db
         self.vect = vect
-            
+        self.word = None
+
     def __iter__(self):
         vocab_size = len(self.vect.vocabulary_)
         for word in self.vect.vocabulary_:
+            
             yield word, word_sparse_centroid(self.db, self.vect, word, vocab_size)
-
+            
 
 def word_sparse_centroid(index_db, idf_model, word, vsize):
     try:
@@ -48,12 +48,12 @@ def word_sparse_centroid(index_db, idf_model, word, vsize):
                 sparse_centroid = sparse_centroid + (sparse_embedding - sparse_centroid) / (n + 1)
             else:
                 sparse_centroid = sparse_embedding
-                
+
         return coo_matrix(sparse_centroid, shape=(1, vsize))
 
     except:
         logging.info("Word not found in index DB: %s ...\nType q + Enter and fix the issue..." % word.encode())
-        return word, None
+        return None
 
 
 class streamer(object):
@@ -69,8 +69,8 @@ def batches(iterable, size=10):
     iterator = iter(iterable)
     for first in iterator:
         chunk = chain([first], islice(iterator, size - 1))
-        
-        yield vstack([c for c in chunk])
+        chuchu = [c for c in chunk]
+        yield [w for w, c in chuchu], vstack([c for w, c in chuchu])
 
 
 parser = argparse.ArgumentParser(description='Build word embeddings by using clustering based sparse coding.')
@@ -85,9 +85,15 @@ parser.add_argument('--chunk', default=100000, type=int, help="The number of wor
                                                                                             " writing them to the database.")
 parser.add_argument('--idf', help="The IDF model to transform sliding windows into sparse embeddings.", default=None)
 parser.add_argument('--dim', default=100, type=int, help="The dimensionality of the output word embeddings.")
+parser.add_argument('--bsize', default=100, type=int, help="The number of samples per batch for minibatch clustering.")
 parser.add_argument('--verbo', default=False, type=int, help="Verbose: setting it greater than 10 prints detailed reports.")
 args = parser.parse_args()
 
+if args.dim > args.bsize:
+    logging.info("The batch size must be greater or equal than dimensionality (number of clustering centroids)")
+    exit()
+
+batch_size = args.bsize
 
 if args.db is None:
     outputf = args.input + ".db"
@@ -103,14 +109,13 @@ try:
             else:
                 vectorizer = pickle.load(f, encoding = 'latin-1')
     else:
-        vectorizer = CountVectorizer(
-                max_df=0.95, min_df=2,
+        vectorizer = TfidfVectorizer(
                 #ngram_range=(1, args.ngrams),
                 #encoding = "latin-1",
                 decode_error = "replace",
                 lowercase = True,
                 #binary = True,# if args.localw.startswith("bin") else False,
-                #sublinear_tf = True,# if args.localw.startswith("subl") else False,
+                sublinear_tf = True,# if args.localw.startswith("subl") else False,
                 stop_words = "english" #if args.stop == 'ost' else None
                 )
         logging.info("Fitting local TFIDF weights from: %s ..." % args.input)
@@ -123,7 +128,7 @@ except:
 
 DBexists = os.path.exists(outputf)
 logging.info("Instantiating index object...")
-index = indexing.file_index(input_file = args.input,
+index = indexing.file_index(input_file = args.input, #'/almac/ignacio/data/INEXQA2012corpus/wikiEn_sts_clean_ph2.txt',
                         index_file = outputf, vectorizer=vectorizer,
                         mmap=True, wsize=args.wsize, sampsize=args.samples, n_jobs=1,
                         chunk_size=args.chunk,
@@ -136,34 +141,50 @@ if not DBexists:
 else:
     logging.info("Index loaded from DB file %s" % outputf)
     
+if index.vocab_size < args.bsize:
+    logging.info("ERROR: Batch size [{}] must be greater than vocabulary [{}]".format(args.bsize, index.vocab_size))
+    exit()
+
 sparse_word_centroids = wordCentroids(db=index, vect=vectorizer)
 # Tal vez pueda cargar la matrix dipersa de word_centroids en ram y hacer NMF.
- 
-logging.info("Fitting Latent Dirichlet Projections for sparse coding ...")
-X_s = Dict(sorted({w: v for w, v in sparse_word_centroids
-                    if not v is None}.items(), key=lambda t: len(t[0])))
+# 
+logging.info("Fitting Birch clustering for sparse coding ...")
+birch = Birch(threshold=0.5, branching_factor=50, n_clusters=args.dim) #MiniBatchKMeans(n_clusters=args.dim, init='k-means++', max_iter=4, batch_size=batch_size)
+words = []
+for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
+    #buffer.append(vstack(batch))
+    logging.info("Fitted the %d th batch..." % i)
+    words.append(batch[0])
+    birch.partial_fit(batch[1])
 
-factorizer = LatentDirichletAllocation(n_topics=args.dim, max_iter=5,
-                                        learning_method='online', n_jobs=-1,
-                                        learning_offset=50., random_state=0)
+words = list(chain(*words))
 
-word_embeddings = factorizer.fit_transform(vstack(list(X_s.values())))
+for i, batch in enumerate(batches(sparse_word_centroids, batch_size)):
+    if i == 0:
+        #word_embeddings = batch[1].dot(csr_matrix(birch.subcluster_centers_).T)
+        word_embeddings = birch.transform(batch[1])
+    else:
+        #word_embeddings = vstack([word_embeddings, batch[1].dot(csr_matrix(birch.subcluster_centers_).T)])
+        
+        word_embeddings = np.vstack([word_embeddings, birch.transform(batch[1])])
 
+# word_embeddings.shape = (vocab_size, args.dim)
 logging.info("DB Vocabulary size %d ..." % index.vocab_size)
 logging.info("Vectorizer vocabulary size %d ..." % len(vectorizer.vocabulary_.keys()))
-logging.info("Shape of resulting embedding matrix:")
-logging.info("({} {})".format(factorizer.components_.shape[0], factorizer.components_.shape[1]))
-
+logging.info("Shape of resulting embedding matrix: ({}, {})".format(birch.subcluster_centers_.shape[0],
+                                                                    birch.subcluster_centers_.shape[1]))
 logging.info("Writing word vectors into file %s ..." % args.output)
 write = partial(indexing.write_given_embedding, fname=args.output)
-
+                                                
 with open(args.output, "w") as f:
-    f.write("{} {}\n".format(len(X_s.keys()), word_embeddings.shape[1]) )
+    f.write("{} {}\n".format(word_embeddings.shape[0], word_embeddings.shape[1]) )
 
-Parallel(#backend='threading',
-            n_jobs=20 
-            )(delayed(write)(w, e) 
-                            for w, e in zip(X_s.keys(), word_embeddings.toarray() 
-                                        if isinstance(word_embeddings, csr_matrix) 
-                                            else word_embeddings))
+    Parallel(#backend='threading',
+        n_jobs=20
+            )(delayed(write)(w, e)
+            for w, e in zip(words, word_embeddings.toarray()
+                if isinstance(word_embeddings, csr_matrix)
+                else word_embeddings))
+
 logging.info("Embedding process has FINISHED!!")
+
