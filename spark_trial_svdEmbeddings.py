@@ -1,0 +1,105 @@
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark import StorageLevel
+from pyspark.sql.types import *
+from pyspark.ml.feature import (Tokenizer, 
+                                StringIndexer, 
+                                HashingTF,
+                                IDF,
+                                CountVectorizer,
+                                PCA,
+                                StopWordsRemover)                                
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import LogisticRegression
+import itertools as it
+
+
+def removePunctuation(column):
+    """Removes punctuation, changes to lower case, and strips leading 
+    and trailing spaces.
+     """
+    return F.lower(F.trim(F.regexp_replace(column,'[^A-Za-z0-9 ]+', ''))).alias('sentence')
+
+
+class windowing(object):
+    def __init__(self, size):
+        if size % 2 == 0:
+            self.size = size + 1
+        else:
+            self.size = size    
+
+    
+    def winds(self, wlist):
+        itrs = it.tee(wlist, self.size)
+        windows = [it.islice(anItr, s, None) for s, anItr in enumerate(itrs)]
+        return list(zip(*windows))
+        
+
+    def get_udf(self):
+        return F.udf(self.winds, ArrayType(ArrayType(StringType())))
+
+    
+def get_medium(window):
+    return window[int(len(window)/2)]
+get_mid = F.udf(get_medium, StringType())
+
+
+def rm_medium(window):
+    i = int(len(window)/2)
+    return window[:i] + window[i + 1:]
+rm_mid = F.udf(rm_medium, ArrayType(StringType()))
+
+
+#input_txt = "/almac/ignacio/data/INEXQA2012corpus/wikiEn_sts_clean_ph2.txt"
+#input_txt = "/almac/ignacio/data/INEXQA2012corpus/wikiEn_sts_clean_ph2_10M.txt"
+input_txt = "sample.txt"
+#input_txt = "/almac/ignacio/data/mexicoSp/cscm_Text_utf8_min.txt"
+winz = 5
+word_nsamps = 10
+rm_stop = True
+language = "spanish"
+# Added the jar driver to the $SPARK_HOME/jars directory:
+# Downloaded from: https://bitbucket.org/xerial/sqlite-jdbc/downloads/sqlite-jdbc-3.8.6.jar
+spark = SparkSession.builder.getOrCreate()
+
+df = spark.read.text(input_txt).select(removePunctuation(F.col('value')))
+tokenizer = Tokenizer(inputCol="sentence", outputCol="toks" if rm_stop else "tokens")  
+df = tokenizer.transform(df)
+if rm_stop:
+    remover = StopWordsRemover(inputCol=tokenizer.getOutputCol(), 
+                            outputCol="tokens",
+                            stopWords=None if language == "english" else 
+                                StopWordsRemover.loadDefaultStopWords(language))
+    df = remover.transform(df)
+
+# Now the magic of windowing the text with F.explode()
+win = windowing(winz)
+decompose = win.get_udf()
+df = df.withColumn("slides", decompose("tokens")) \
+        .withColumn("exploded", F.explode("slides")) \
+        .withColumn("word", get_mid("exploded")) \
+        .withColumn("window", rm_mid("exploded"))
+        
+df = df.drop(*[c for c in df.columns if not c in ["word", "window"]])
+
+indexer = StringIndexer(inputCol="word", outputCol="label")
+df = indexer.fit(df).transform(df).persist(StorageLevel.DISK_ONLY)#MEMORY_AND_DISK)
+
+hashingTF = HashingTF(inputCol="window", outputCol="rawFeatures")
+df = hashingTF.transform(df)
+
+idf = IDF(inputCol="rawFeatures", outputCol="features")  #"idfFeatures")
+idfModel = idf.fit(df)
+df = idfModel.transform(df).drop("rawFeatures")
+
+#pca = PCA(k=3, inputCol="idfFeatures", outputCol="features")
+#model = pca.fit(df).transform(df)
+
+train, test = df.randomSplit([0.7, 0.3], 24)
+lr = LogisticRegression(regParam=0.001)
+model = lr.fit(train)
+
+prediction = model.transform(test)
+prediction.show(truncate=False)
+
+
