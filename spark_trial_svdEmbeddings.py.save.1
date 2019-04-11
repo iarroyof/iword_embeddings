@@ -100,6 +100,6 @@ lr = LogisticRegression(regParam=0.001)
 model = lr.fit(train)
 
 prediction = model.transform(test)
-prediction.show(truncate=False)
+prediction.select(["word", "window", "label", "prediction"]).show(truncate=False)
 
 

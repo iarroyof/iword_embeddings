@@ -1,0 +1,4 @@
+Warning: Ignoring non-spark config property: log4j.rootCategory=INFO
+2019-02-18 16:08:02 WARN  NativeCodeLoader:62 - Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Setting default log level to "WARN".
+To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
